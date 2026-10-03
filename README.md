@@ -40,7 +40,7 @@ the SSH settings, the installer arms a timer; if you do not cancel it, the new S
 removed automatically after the delay, even if the new settings were to lock you out:
 
 ```bash
-sudo bash install.sh --rollback-timer 20
+sudo bash install.sh --rollback-timer 30
 ```
 
 Keep your current SSH session open, check that the app (or `ssh` as the new account) can
@@ -64,6 +64,9 @@ sudo bash install.sh --uninstall
 | `--auth key\|password\|both` | How the app logs in (asked if omitted) |
 | `--pubkey "ssh-ed25519 AAAA..."` / `--pubkey-file F` | Public key from the app (repeatable) |
 | `--reset-password` | Generate a new password |
+| `--replace-keys` | Keep only the keys given with `--pubkey` (by default the already authorized keys stay) |
+| `--keys-only` | Only update the authorized keys (with `--pubkey`, and `--replace-keys` to drop the others) |
+| `--retention-only` | Only (re)install the log cleanup job (`--retention-days N`), or remove it (`--no-retention`) |
 | `--user NAME` | Service account name (default `ysfmonitor`) |
 | `--ini PATH` | Reflector configuration file (default: detected, else `/etc/YSFReflector.ini`) |
 | `--retention-days N` / `--no-retention` | Log cleanup (default 180 days, minimum 7) |
@@ -150,7 +153,7 @@ même s'ils vous avaient coupé l'accès. Gardez votre session SSH ouverte, vér
 connexion du nouveau compte fonctionne, puis annulez la minuterie.
 
 ```bash
-sudo bash install.sh --rollback-timer 20
+sudo bash install.sh --rollback-timer 30
 sudo systemctl stop ysf-sysop-rollback.timer     # une fois la connexion vérifiée
 ```
 

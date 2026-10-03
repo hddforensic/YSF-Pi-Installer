@@ -21,8 +21,8 @@ set -Eeuo pipefail
 PATH="$PATH:/usr/sbin:/sbin:/usr/local/sbin"
 umask 022
 
-INSTALLER_VERSION="0.1.0"
-HELPER_VERSION="1"
+INSTALLER_VERSION="0.2.0"
+HELPER_VERSION="2"
 
 HELPER_PATH="/usr/local/bin/ysf-sysop-log"
 CONF_DIR="/etc/ysf-sysop"
@@ -38,6 +38,9 @@ DRY=0
 YES=0
 UNINSTALL=0
 RESET_PASSWORD=0
+REPLACE_KEYS=0
+KEYS_ONLY=0
+RETENTION_ONLY=0
 NO_RETENTION=0
 RETENTION_DAYS=180
 SVC_USER="ysfmonitor"
@@ -77,6 +80,12 @@ Usage: sudo bash install.sh [options]
                          Public key shown by the app (can be repeated)
   --pubkey-file FILE     File containing one public key
   --reset-password       Generate a new password for the account (password/both)
+  --replace-keys         Keep ONLY the keys given with --pubkey (default: the keys already
+                         authorized stay, and the new ones are added)
+  --keys-only            Only update the authorized keys (use with --pubkey, and --replace-keys
+                         to drop the others); no other change, SSH is not reloaded
+  --retention-only       Only (re)install the log cleanup job, with --retention-days N, or remove
+                         it with --no-retention; no other change
   --user NAME            Service account name (default: ysfmonitor)
   --ini PATH             Path to YSFReflector.ini (default: detected, else
                          /etc/YSFReflector.ini)
@@ -103,6 +112,7 @@ cat <<'YSF_HELPER_EOF'
 #   version                     print the helper version
 #   status                      key=value lines about the reflector and the log
 #   list                        "YYYY-MM-DD size-in-bytes" for each daily log file
+#   system                      key=value lines about the machine (temperature, CPU, memory, disk)
 #   read   YYYY-MM-DD OFFSET    raw bytes of that day's log from byte OFFSET to the end
 #   follow YYYY-MM-DD OFFSET    like read, then keeps streaming new bytes; ends by
 #                               itself (exit 0) shortly after UTC midnight
@@ -112,7 +122,7 @@ set -u
 export LC_ALL=C
 PATH=/usr/local/bin:/usr/bin:/bin
 CONF=/etc/ysf-sysop/ysf-sysop.conf
-HELPER_VERSION=1
+HELPER_VERSION=2
 
 LOG_DIR=""; LOG_ROOT=""; INI_PATH=""; PROC_NAME="YSFReflector"
 if [ -r "$CONF" ]; then
@@ -136,6 +146,7 @@ Commands (sent as the SSH command):
   version
   status
   list
+  system
   read   YYYY-MM-DD OFFSET
   follow YYYY-MM-DD OFFSET
 EOF
@@ -183,6 +194,39 @@ do_status() {
     echo "reflector_name=$n"
     echo "reflector_port=$p"
   fi
+}
+
+# Read-only facts about the machine, from the standard Linux interfaces (no root needed).
+cpu_sample() { # prints "idle total" jiffies
+  awk '/^cpu /{idle=$5+$6; total=0; for(i=2;i<=9;i++) total+=$i; print idle, total; exit}' /proc/stat
+}
+
+do_system() {
+  local a b c i1 t1 i2 t2 dt di model os
+  if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
+    a=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || true)
+    [ -z "$a" ] || echo "cpu_temp_mc=$a"
+  fi
+  read -r a b c _ < /proc/loadavg
+  echo "load1=$a"; echo "load5=$b"; echo "load15=$c"
+  echo "cpu_count=$(grep -c '^processor' /proc/cpuinfo)"
+  read -r i1 t1 < <(cpu_sample); sleep 0.5; read -r i2 t2 < <(cpu_sample)
+  dt=$((t2 - t1)); di=$((i2 - i1))
+  if [ "$dt" -gt 0 ]; then echo "cpu_percent=$(( 100 * (dt - di) / dt ))"; fi
+  awk '
+    /^MemTotal:/     { print "mem_total_kb=" $2 }
+    /^MemAvailable:/ { print "mem_available_kb=" $2 }
+    /^SwapTotal:/    { print "swap_total_kb=" $2 }
+    /^SwapFree:/     { print "swap_free_kb=" $2 }
+  ' /proc/meminfo
+  df -P -k -- "$LOG_DIR" 2>/dev/null | awk 'NR==2 { print "disk_total_kb=" $2; print "disk_used_kb=" $3; print "disk_avail_kb=" $4 }'
+  echo "logs_kb=$(du -sk -- "$LOG_DIR" 2>/dev/null | cut -f1)"
+  echo "uptime_s=$(cut -d. -f1 /proc/uptime)"
+  model=$(tr -d '\000-\037' < /proc/device-tree/model 2>/dev/null || true)
+  [ -z "$model" ] || echo "model=$model"
+  os=$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}" | tr -d '\000-\037' || true)
+  [ -z "$os" ] || echo "os=$os"
+  echo "kernel=$(uname -r | tr -d '\000-\037')"
 }
 
 do_list() {
@@ -248,6 +292,7 @@ case "$1" in
   version) [ $# -eq 1 ] || fail "usage: version" 2; echo "$HELPER_VERSION" ;;
   status)  [ $# -eq 1 ] || fail "usage: status" 2;  do_status ;;
   list)    [ $# -eq 1 ] || fail "usage: list" 2;    do_list ;;
+  system)  [ $# -eq 1 ] || fail "usage: system" 2;  do_system ;;
   read)    [ $# -eq 3 ] || fail "usage: read YYYY-MM-DD OFFSET" 2;   do_read "$2" "$3" ;;
   follow)  [ $# -eq 3 ] || fail "usage: follow YYYY-MM-DD OFFSET" 2; do_follow "$2" "$3" ;;
   *)       fail "unknown command" 2 ;;
@@ -284,6 +329,9 @@ while [ $# -gt 0 ]; do
     --yes|-y) YES=1 ;;
     --uninstall) UNINSTALL=1 ;;
     --reset-password) RESET_PASSWORD=1 ;;
+    --replace-keys) REPLACE_KEYS=1 ;;
+    --keys-only) KEYS_ONLY=1 ;;
+    --retention-only) RETENTION_ONLY=1 ;;
     --no-retention) NO_RETENTION=1 ;;
     --auth) need_value "$@"; AUTH_MODE=$2; shift ;;
     --user) need_value "$@"; SVC_USER=$2; shift ;;
@@ -515,8 +563,17 @@ existing_retention() { # prints where a cleanup of this log folder already exist
 }
 
 install_retention() {
-  [ "$NO_RETENTION" = 1 ] && return 0
-  if existing_retention >/dev/null; then return 0; fi
+  if [ "$NO_RETENTION" = 1 ]; then
+    if [ -f "$CRON_FILE" ]; then
+      act "remove $CRON_FILE (no log cleanup wanted)"
+      [ "$DRY" = 1 ] || rm -f "$CRON_FILE"
+    fi
+    return 0
+  fi
+  if existing_retention >/dev/null; then
+    say "  log cleanup: you already have one ($(existing_retention)) - left as is"
+    return 0
+  fi
   if [ "$DRY" != 1 ] && ! systemctl is-active --quiet cron 2>/dev/null; then
     warn "the cron service is not running, so the log cleanup was not installed."
     return 0
@@ -572,7 +629,7 @@ write_helper_and_conf() {
 
 update_keys() {
   local line existing="" new=""
-  [ -f "$AUTH_KEYS" ] && existing=$(grep '^restrict ' "$AUTH_KEYS" 2>/dev/null || true)
+  if [ "$REPLACE_KEYS" != 1 ] && [ -f "$AUTH_KEYS" ]; then existing=$(grep '^restrict ' "$AUTH_KEYS" 2>/dev/null || true); fi
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     case "$existing" in *" $line "*) continue ;; esac
@@ -766,7 +823,26 @@ check_environment
 if [ "$UNINSTALL" = 1 ]; then do_uninstall; exit 0; fi
 
 say "YSF-Pi-Installer $INSTALLER_VERSION$( [ "$DRY" = 1 ] && printf '  (dry run: nothing will be changed)' )"
+
+if [ "$KEYS_ONLY" = 1 ]; then
+  info "Updating the authorized keys only"
+  AUTH_MODE="key"
+  collect_keys
+  [ -n "$PUBKEYS" ] || die "--keys-only needs at least one --pubkey"
+  update_keys
+  if [ "$DRY" = 1 ]; then say "Dry run finished: nothing was changed."; else say "Authorized keys updated."; fi
+  exit 0
+fi
+
 detect_reflector
+
+if [ "$RETENTION_ONLY" = 1 ]; then
+  info "Updating the log cleanup only"
+  install_retention
+  if [ "$DRY" = 1 ]; then say "Dry run finished: nothing was changed."; else say "Log cleanup updated."; fi
+  exit 0
+fi
+
 choose_auth
 collect_keys
 
