@@ -3,7 +3,7 @@
 Sets up **read-only access to your YSFReflector log** for the **YSF Sysop** iOS app, on the
 Raspberry Pi (or other Debian machine) that runs your reflector.
 
-> Version 0.1.0 (first draft, not yet released). Français : voir plus bas.
+> Version 0.2.0 (helper v2). Used by the YSF Sysop app, which can also run this script for you over SSH. Français : voir plus bas.
 
 ## What it does
 
@@ -74,7 +74,7 @@ sudo bash install.sh --uninstall
 | `-y`, `--yes` | No confirmation question (give the answers as options) |
 | `--uninstall` | Remove everything this installer added |
 
-## Requirements and limits (v0.1)
+## Requirements and limits
 
 - Debian-family Linux with systemd and OpenSSH (Raspberry Pi OS, Debian 12/13).
 - `[Log]` in `YSFReflector.ini` must have `FilePath`, `FileRoot`, `FileLevel=1` (or 2) and
@@ -95,7 +95,7 @@ sudo bash install.sh --uninstall
   changes if anything looks wrong.
 - Read the script before running it as root. That is why the download-then-run method is recommended.
 
-## Helper protocol (v1, for app developers)
+## Helper protocol (v2, for app developers)
 
 The app runs one of these as the SSH command; the account's `ForceCommand` passes it to
 `/usr/local/bin/ysf-sysop-log` (anything else is refused):
@@ -105,6 +105,7 @@ The app runs one of these as the SSH command; the account's `ForceCommand` passe
 | `version` | the helper version |
 | `status` | `key=value` lines: `helper_version`, `utc_now`, `utc_date`, `today_file_size`, `reflector_running`, `reflector_name`, `reflector_port` |
 | `list` | one line `YYYY-MM-DD size` per daily log file |
+| `system` | `key=value` lines about the machine: `cpu_temp_mc` (milli-°C), `load1/5/15`, `cpu_count`, `cpu_percent`, `mem_*_kb`, `swap_*_kb`, `disk_*_kb` (the log folder's disk), `logs_kb`, `uptime_s`, `model`, `os`, `kernel` (new in v2) |
 | `read YYYY-MM-DD OFFSET` | raw log bytes of that UTC day from byte `OFFSET` to the end |
 | `follow YYYY-MM-DD OFFSET` | like `read`, then keeps streaming; only for today's UTC date; ends by itself (exit 0) just after UTC midnight |
 
